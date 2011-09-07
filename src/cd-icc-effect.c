@@ -50,10 +50,10 @@ static const gchar *glsl_shader =
 "main ()\n"
 "{\n"
 "  vec3 tex_color = texture2D (main_texture, gl_TexCoord[0].st).rgb;\n"
-"  vec3 idx = texture2D (indirect_texture, gl_TexCoord[0].st).rgb;\n"
-"  if (idx.r > 0.6)\n"
+"  float idx = texture2D (indirect_texture, gl_TexCoord[0].st).a;\n"
+"  if (idx > 0.6)\n"
 "    gl_FragColor = texture3D (color_data1, tex_color);\n"
-"  else if (idx.r > 0.1)\n"
+"  else if (idx > 0.1)\n"
 "    gl_FragColor = texture3D (color_data2, tex_color);\n"
 "  else\n"
 "    gl_FragColor.rgb = tex_color;\n"
@@ -265,12 +265,12 @@ cd_icc_effect_generate_indirect_data (CdIccEffect *self, GError **error)
   /* create a redirection array */
   width = clutter_actor_get_width (self->actor);
   height = clutter_actor_get_height (self->actor);
-  data = g_new0 (guint8, width * height * 3);
+  data = g_new0 (guint8, width * height);
 
   for (y=0; y<height; y++)
     for (x=0; x<width; x++)
       {
-        p = data + ((x + (y * width)) * 3);
+        p = data + (x + (y * width));
         if (x > 150)
           *(p+0) = 255;
         else if (x < 120)
@@ -281,7 +281,7 @@ cd_icc_effect_generate_indirect_data (CdIccEffect *self, GError **error)
   tex = cogl_texture_new_from_data (width,
                                     height,
                                     COGL_TEXTURE_NO_AUTO_MIPMAP,
-                                    COGL_PIXEL_FORMAT_RGB_888,
+                                    COGL_PIXEL_FORMAT_A_8,
                                     COGL_PIXEL_FORMAT_ANY,
                                     /* data is tightly packed so we can pass zero */
                                     0,
