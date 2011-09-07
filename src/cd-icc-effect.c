@@ -42,17 +42,20 @@
 
 static const gchar *glsl_shader =
 "uniform sampler2D main_texture;\n"
-"uniform sampler3D color_data;\n"
+"uniform sampler3D color_data1;\n"
+"uniform sampler3D color_data2;\n"
 "uniform sampler2D indirect_texture;\n"
 "\n"
 "void\n"
 "main ()\n"
 "{\n"
 "  vec3 tex_color = texture2D (main_texture, gl_TexCoord[0].st).rgb;\n"
-"  gl_FragColor = texture3D (color_data, tex_color);\n"
 "  vec3 idx = texture2D (indirect_texture, gl_TexCoord[0].st).rgb;\n"
 "  if (idx.r > 0.5)\n"
-"    gl_FragColor.r = 1.0;\n"
+"    gl_FragColor = texture3D (color_data1, tex_color);\n"
+"  else\n"
+"    gl_FragColor = texture3D (color_data2, tex_color);\n"
+"  //gl_FragColor.r = 1.0;\n"
 "}";
 
 struct _CdIccEffect
@@ -67,7 +70,8 @@ struct _CdIccEffect
 
   gint main_texture_uniform;
   gint indirect_texture_uniform;
-  gint color_data_uniform;
+  gint color_data1_uniform;
+  gint color_data2_uniform;
 
   guint is_compiled : 1;
 };
@@ -119,7 +123,8 @@ cd_icc_effect_pre_paint (ClutterEffect *effect)
       self->is_compiled = FALSE;
       self->main_texture_uniform = -1;
       self->indirect_texture_uniform = -1;
-      self->color_data_uniform = -1;
+      self->color_data1_uniform = -1;
+      self->color_data2_uniform = -1;
     }
 
   if (self->program == COGL_INVALID_HANDLE)
@@ -158,8 +163,10 @@ cd_icc_effect_pre_paint (ClutterEffect *effect)
             cogl_program_get_uniform_location (self->program, "main_texture");
           self->indirect_texture_uniform =
             cogl_program_get_uniform_location (self->program, "indirect_texture");
-          self->color_data_uniform =
-            cogl_program_get_uniform_location (self->program, "color_data");
+          self->color_data1_uniform =
+            cogl_program_get_uniform_location (self->program, "color_data1");
+          self->color_data2_uniform =
+            cogl_program_get_uniform_location (self->program, "color_data2");
         }
     }
 
@@ -280,8 +287,9 @@ cd_icc_effect_generate_indirect_data (CdIccEffect *self, GError **error)
   return tex;
 }
 
-#define GCM_FSCM_LAYER_COLOR      1
-#define GCM_FSCM_LAYER_INDIRECT   2
+#define GCM_FSCM_LAYER_COLOR1      1
+#define GCM_FSCM_LAYER_COLOR2      2
+#define GCM_FSCM_LAYER_INDIRECT    3
 
 static void
 cd_icc_effect_paint_target (ClutterOffscreenEffect *effect)
@@ -301,21 +309,28 @@ cd_icc_effect_paint_target (ClutterOffscreenEffect *effect)
                                  self->main_texture_uniform,
                                  0);
 
-  if (self->color_data_uniform > -1)
+  if (self->color_data1_uniform > -1)
     cogl_program_set_uniform_1i (self->program,
-                                 self->color_data_uniform,
-                                 1);
+                                 self->color_data1_uniform,
+                                 1); /* not the layer number, just co-incidence */
+  if (self->color_data2_uniform > -1)
+    cogl_program_set_uniform_1i (self->program,
+                                 self->color_data2_uniform,
+                                 2);
 
   if (self->indirect_texture_uniform > -1)
     cogl_program_set_uniform_1i (self->program,
                                  self->indirect_texture_uniform,
-                                 2);
+                                 3);
 
   material = clutter_offscreen_effect_get_target (effect);
 
+
+
+
   /* get the color textures */
-  color_data = cd_icc_effect_generate_cogl_color_data ("/usr/share/color/icc/FakeRBG.icc",
-                                                  &error);
+  color_data = cd_icc_effect_generate_cogl_color_data ("/usr/share/color/icc/FakeBRG.icc",
+                                                       &error);
   if (color_data == COGL_INVALID_HANDLE)
     {
       g_warning ("Error creating lookup texture: %s", error->message);
@@ -324,18 +339,50 @@ cd_icc_effect_paint_target (ClutterOffscreenEffect *effect)
     }
 
   /* add the texture into the second layer of the material */
-  cogl_material_set_layer (material, GCM_FSCM_LAYER_COLOR, color_data);
+  cogl_material_set_layer (material, GCM_FSCM_LAYER_COLOR1, color_data);
 
   /* we want to use linear interpolation for the texture */
-  cogl_material_set_layer_filters (material, GCM_FSCM_LAYER_COLOR,
+  cogl_material_set_layer_filters (material, GCM_FSCM_LAYER_COLOR1,
                                    COGL_MATERIAL_FILTER_LINEAR,
                                    COGL_MATERIAL_FILTER_LINEAR);
 
   /* clamp to the maximum values */
-  cogl_material_set_layer_wrap_mode (material, GCM_FSCM_LAYER_COLOR,
+  cogl_material_set_layer_wrap_mode (material, GCM_FSCM_LAYER_COLOR1,
                                      COGL_MATERIAL_WRAP_MODE_CLAMP_TO_EDGE);
 
   cogl_handle_unref (color_data);
+
+
+
+
+
+  /* get the color textures */
+  color_data = cd_icc_effect_generate_cogl_color_data ("/usr/share/color/icc/FakeRBG.icc",
+                                                        &error);
+  if (color_data == COGL_INVALID_HANDLE)
+    {
+      g_warning ("Error creating lookup texture: %s", error->message);
+      g_error_free (error);
+      goto out;
+    }
+
+  /* add the texture into the second layer of the material */
+  cogl_material_set_layer (material, GCM_FSCM_LAYER_COLOR2, color_data);
+
+  /* we want to use linear interpolation for the texture */
+  cogl_material_set_layer_filters (material, GCM_FSCM_LAYER_COLOR2,
+                                   COGL_MATERIAL_FILTER_LINEAR,
+                                   COGL_MATERIAL_FILTER_LINEAR);
+
+  /* clamp to the maximum values */
+  cogl_material_set_layer_wrap_mode (material, GCM_FSCM_LAYER_COLOR2,
+                                     COGL_MATERIAL_WRAP_MODE_CLAMP_TO_EDGE);
+
+  cogl_handle_unref (color_data);
+
+
+
+
 
   /* get the indirect texture */
   indirect_texture = cd_icc_effect_generate_indirect_data (self, &error);
