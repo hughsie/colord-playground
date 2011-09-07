@@ -51,11 +51,12 @@ static const gchar *glsl_shader =
 "{\n"
 "  vec3 tex_color = texture2D (main_texture, gl_TexCoord[0].st).rgb;\n"
 "  vec3 idx = texture2D (indirect_texture, gl_TexCoord[0].st).rgb;\n"
-"  if (idx.r > 0.5)\n"
+"  if (idx.r > 0.6)\n"
 "    gl_FragColor = texture3D (color_data1, tex_color);\n"
-"  else\n"
+"  else if (idx.r > 0.1)\n"
 "    gl_FragColor = texture3D (color_data2, tex_color);\n"
-"  //gl_FragColor.r = 1.0;\n"
+"  else\n"
+"    gl_FragColor.rgb = tex_color;\n"
 "}";
 
 struct _CdIccEffect
@@ -270,8 +271,10 @@ cd_icc_effect_generate_indirect_data (CdIccEffect *self, GError **error)
     for (x=0; x<width; x++)
       {
         p = data + ((x + (y * width)) * 3);
-        if (x > 80)
+        if (x > 150)
           *(p+0) = 255;
+        else if (x < 120)
+          *(p+0) = 128;
       }
 
   /* creates a cogl texture from the data */
