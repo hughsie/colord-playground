@@ -43,12 +43,16 @@
 static const gchar *glsl_shader =
 "uniform sampler2D main_texture;\n"
 "uniform sampler3D color_data;\n"
+"uniform sampler2D indirect_texture;\n"
 "\n"
 "void\n"
 "main ()\n"
 "{\n"
 "  vec3 tex_color = texture2D (main_texture, gl_TexCoord[0].st).rgb;\n"
 "  gl_FragColor = texture3D (color_data, tex_color);\n"
+"  vec3 idx = texture2D (indirect_texture, gl_TexCoord[0].st).rgb;\n"
+"  if (idx.r > 0.5)\n"
+"    gl_FragColor.r = 1.0;\n"
 "}";
 
 struct _CdIccEffect
@@ -62,6 +66,7 @@ struct _CdIccEffect
   CoglHandle program;
 
   gint main_texture_uniform;
+  gint indirect_texture_uniform;
   gint color_data_uniform;
 
   guint is_compiled : 1;
@@ -113,6 +118,7 @@ cd_icc_effect_pre_paint (ClutterEffect *effect)
 
       self->is_compiled = FALSE;
       self->main_texture_uniform = -1;
+      self->indirect_texture_uniform = -1;
       self->color_data_uniform = -1;
     }
 
@@ -150,6 +156,8 @@ cd_icc_effect_pre_paint (ClutterEffect *effect)
 
           self->main_texture_uniform =
             cogl_program_get_uniform_location (self->program, "main_texture");
+          self->indirect_texture_uniform =
+            cogl_program_get_uniform_location (self->program, "indirect_texture");
           self->color_data_uniform =
             cogl_program_get_uniform_location (self->program, "color_data");
         }
@@ -167,6 +175,7 @@ cd_icc_effect_error_cb (cmsContext ContextID, cmsUInt32Number errorcode, const c
 {
   g_warning ("LCMS error %i: %s", errorcode, text);
 }
+
 
 /**
  * cd_icc_effect_generate_cogl_color_data:
@@ -232,7 +241,47 @@ out:
   return tex;
 }
 
-#define GCM_FSCM_LAYER  1
+/**
+ * cd_icc_effect_generate_indirect_data:
+ **/
+static CoglHandle
+cd_icc_effect_generate_indirect_data (CdIccEffect *self, GError **error)
+{
+  CoglHandle tex = NULL;
+  guint width;
+  guint height;
+  guint x, y;
+  guint8 *data;
+  guint8 *p;
+
+  /* create a redirection array */
+  width = clutter_actor_get_width (self->actor);
+  height = clutter_actor_get_height (self->actor);
+  data = g_new0 (guint8, width * height * 3);
+
+  for (y=0; y<height; y++)
+    for (x=0; x<width; x++)
+      {
+        p = data + ((x + (y * width)) * 3);
+        if (x > 80)
+          *(p+0) = 255;
+      }
+
+  /* creates a cogl texture from the data */
+  tex = cogl_texture_new_from_data (width,
+                                    height,
+                                    COGL_TEXTURE_NO_AUTO_MIPMAP,
+                                    COGL_PIXEL_FORMAT_RGB_888,
+                                    COGL_PIXEL_FORMAT_ANY,
+                                    /* data is tightly packed so we can pass zero */
+                                    0,
+                                    data);
+  g_free (data);
+  return tex;
+}
+
+#define GCM_FSCM_LAYER_COLOR      1
+#define GCM_FSCM_LAYER_INDIRECT   2
 
 static void
 cd_icc_effect_paint_target (ClutterOffscreenEffect *effect)
@@ -241,23 +290,31 @@ cd_icc_effect_paint_target (ClutterOffscreenEffect *effect)
   ClutterOffscreenEffectClass *parent;
   CoglHandle material;
   CoglHandle color_data;
+  CoglHandle indirect_texture;
   GError *error = NULL;
 
   if (self->program == COGL_INVALID_HANDLE)
     goto out;
 
   if (self->main_texture_uniform > -1)
-    cogl_program_set_uniform_1i (self->program, self->main_texture_uniform, 0);
+    cogl_program_set_uniform_1i (self->program,
+                                 self->main_texture_uniform,
+                                 0);
 
   if (self->color_data_uniform > -1)
     cogl_program_set_uniform_1i (self->program,
                                  self->color_data_uniform,
                                  1);
 
+  if (self->indirect_texture_uniform > -1)
+    cogl_program_set_uniform_1i (self->program,
+                                 self->indirect_texture_uniform,
+                                 2);
+
   material = clutter_offscreen_effect_get_target (effect);
 
-
-  color_data = cd_icc_effect_generate_cogl_color_data ("/usr/share/color/icc/FakeBRG.icc",
+  /* get the color textures */
+  color_data = cd_icc_effect_generate_cogl_color_data ("/usr/share/color/icc/FakeRBG.icc",
                                                   &error);
   if (color_data == COGL_INVALID_HANDLE)
     {
@@ -267,18 +324,41 @@ cd_icc_effect_paint_target (ClutterOffscreenEffect *effect)
     }
 
   /* add the texture into the second layer of the material */
-  cogl_material_set_layer (material, GCM_FSCM_LAYER, color_data);
+  cogl_material_set_layer (material, GCM_FSCM_LAYER_COLOR, color_data);
 
   /* we want to use linear interpolation for the texture */
-  cogl_material_set_layer_filters (material, GCM_FSCM_LAYER,
+  cogl_material_set_layer_filters (material, GCM_FSCM_LAYER_COLOR,
                                    COGL_MATERIAL_FILTER_LINEAR,
                                    COGL_MATERIAL_FILTER_LINEAR);
 
   /* clamp to the maximum values */
-  cogl_material_set_layer_wrap_mode (material, GCM_FSCM_LAYER,
+  cogl_material_set_layer_wrap_mode (material, GCM_FSCM_LAYER_COLOR,
                                      COGL_MATERIAL_WRAP_MODE_CLAMP_TO_EDGE);
 
   cogl_handle_unref (color_data);
+
+  /* get the indirect texture */
+  indirect_texture = cd_icc_effect_generate_indirect_data (self, &error);
+  if (indirect_texture == COGL_INVALID_HANDLE)
+    {
+      g_warning ("Error creating indirect texture: %s", error->message);
+      g_error_free (error);
+      goto out;
+    }
+
+  /* add the texture into the second layer of the material */
+  cogl_material_set_layer (material, GCM_FSCM_LAYER_INDIRECT, indirect_texture);
+
+  /* we want to use linear interpolation for the texture */
+  cogl_material_set_layer_filters (material, GCM_FSCM_LAYER_INDIRECT,
+                                   COGL_MATERIAL_FILTER_LINEAR,
+                                   COGL_MATERIAL_FILTER_LINEAR);
+
+  /* clamp to the maximum values */
+  cogl_material_set_layer_wrap_mode (material, GCM_FSCM_LAYER_INDIRECT,
+                                     COGL_MATERIAL_WRAP_MODE_CLAMP_TO_EDGE);
+
+  cogl_handle_unref (indirect_texture);
 
   cogl_material_set_user_program (material, self->program);
 
